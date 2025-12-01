@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # FastAPI Application
+  api:
+    build: .
+    container_name: video-download-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=false
+      - DATABASE_URL=sqlite:///./data/tasks.db
+      - REDIS_URL=redis://redis:6379/0
+      - DOWNLOAD_DIR=/app/downloads
+      - MAX_CONCURRENT_DOWNLOADS=100
+      - YTDLP_FORMAT=bestvideo+bestaudio/best
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+    depends_on:
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    networks:
+      - video-download-network
+
+  # Celery Worker
+  # Note: Docker image includes gevent, so --pool=gevent works
+  # For local dev without gevent: celery -A app.celery_app worker --loglevel=info
+  worker:
+    build: .
+    container_name: video-download-worker
+    environment:
+      - DEBUG=false
+      - DATABASE_URL=sqlite:///./data/tasks.db
+      - REDIS_URL=redis://redis:6379/0
+      - DOWNLOAD_DIR=/app/downloads
+      - MAX_CONCURRENT_DOWNLOADS=100
+      - YTDLP_FORMAT=bestvideo+bestaudio/best
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+    depends_on:
+      - redis
+    command: celery -A app.celery_app worker --loglevel=info --pool=gevent --concurrency=100
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    networks:
+      - video-download-network
+
+  # Redis (Celery broker)
+  redis:
+    image: redis:7-alpine
+    container_name: video-download-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - video-download-network
+
+networks:
+  video-download-network:
+    driver: bridge
+
+volumes:
+  redis_data:
