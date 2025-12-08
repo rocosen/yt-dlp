@@ -94,6 +94,14 @@ def create_task(
     if not request.video_url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid video URL")
 
+    # Validate storage configuration
+    storage_type = request.storage_type.value if request.storage_type else "local"
+    if storage_type != "local" and not request.storage_url:
+        raise HTTPException(
+            status_code=400,
+            detail="storage_url is required when storage_type is not 'local'"
+        )
+
     # Create task in database
     task = Task(
         video_url=request.video_url,
@@ -105,11 +113,13 @@ def create_task(
     db.commit()
     db.refresh(task)
 
-    # Queue Celery task
+    # Queue Celery task with new parameters
     celery_task = download_video_task.delay(
         task_id=task.id,
         video_url=request.video_url,
         callback_url=request.callback_url,
+        storage_type=storage_type,
+        storage_url=request.storage_url,
         options=request.options.model_dump() if request.options else None,
     )
 
@@ -117,7 +127,7 @@ def create_task(
     task.celery_task_id = celery_task.id
     db.commit()
 
-    logger.info(f"Created task {task.id} for URL: {request.video_url}")
+    logger.info(f"Created task {task.id} for URL: {request.video_url} (storage: {storage_type})")
 
     return CreateTaskResponse(
         task_id=task.id,

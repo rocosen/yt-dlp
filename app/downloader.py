@@ -134,10 +134,75 @@ class VideoDownloader:
                 })
         return result[:10]  # Limit to 10 formats
 
+    def _build_format_spec(
+        self,
+        download_type: str = "audio_video",
+        video_quality: str = "720",
+        format_spec: Optional[str] = None,
+    ) -> str:
+        """
+        Build yt-dlp format specification based on download_type and video_quality.
+
+        Args:
+            download_type: audio, video, or audio_video
+            video_quality: best, worst, or resolution (480, 720, 1080, 1440, 2160)
+            format_spec: Override format spec (if provided, use directly)
+
+        Returns:
+            yt-dlp format string
+
+        Format selection priority (with fallback):
+        1. Try requested quality
+        2. Fallback to best available if requested not found
+        """
+        # If explicit format_spec provided, use it directly
+        if format_spec:
+            return format_spec
+
+        # Build format based on download_type and video_quality
+        if download_type == "audio":
+            # Audio only: best audio, fallback to best overall
+            return "bestaudio/best"
+
+        elif download_type == "video":
+            # Video only, no audio
+            if video_quality == "best":
+                return "bestvideo/best"
+            elif video_quality == "worst":
+                return "worstvideo/worst"
+            else:
+                # Try requested resolution, fallback to best available
+                return (
+                    f"bestvideo[height<={video_quality}]/"
+                    f"bestvideo/"
+                    f"best[height<={video_quality}]/"
+                    f"best"
+                )
+
+        else:  # audio_video (default)
+            if video_quality == "best":
+                return "bestvideo+bestaudio/bestvideo*+bestaudio/best"
+            elif video_quality == "worst":
+                return "worstvideo+worstaudio/worst"
+            else:
+                # Priority:
+                # 1. video<=quality + best audio (separate streams, merged)
+                # 2. best video + best audio (if quality not available)
+                # 3. single file <=quality
+                # 4. best single file
+                return (
+                    f"bestvideo[height<={video_quality}]+bestaudio/"
+                    f"bestvideo+bestaudio/"
+                    f"best[height<={video_quality}]/"
+                    f"best"
+                )
+
     def download(
         self,
         url: str,
         progress_callback: Optional[Callable[[float, str], None]] = None,
+        download_type: str = "audio_video",
+        video_quality: str = "720",
         format_spec: Optional[str] = None,
         extract_audio: bool = False,
         audio_format: str = "mp3",
@@ -148,9 +213,11 @@ class VideoDownloader:
         Args:
             url: Video URL
             progress_callback: Optional callback(progress_percent, status_message)
-            format_spec: yt-dlp format specification
-            extract_audio: If True, extract audio only
-            audio_format: Audio format when extract_audio is True
+            download_type: Download type - audio, video, or audio_video
+            video_quality: Video quality - best, worst, or resolution (480, 720, 1080, 1440, 2160)
+            format_spec: yt-dlp format specification (overrides download_type/video_quality)
+            extract_audio: [Deprecated] Use download_type='audio' instead
+            audio_format: Audio format when download_type is 'audio' (mp3, aac, wav, m4a)
 
         Returns:
             DownloadResult with file path and metadata
@@ -158,13 +225,20 @@ class VideoDownloader:
         Raises:
             DownloadError: If download fails
         """
+        # Handle legacy extract_audio parameter
+        if extract_audio and download_type == "audio_video":
+            download_type = "audio"
+
+        # Build format specification
+        computed_format = self._build_format_spec(download_type, video_quality, format_spec)
+
         # Generate unique filename to avoid conflicts
         unique_id = str(uuid.uuid4())[:8]
         output_template = str(self.download_dir / f"%(title).100s_{unique_id}.%(ext)s")
 
         opts = self._get_base_opts()
         opts.update({
-            "format": format_spec or self.format_spec,
+            "format": computed_format,
             "outtmpl": output_template,
             "noplaylist": True,  # Download only single video
             "socket_timeout": 30,
@@ -172,9 +246,8 @@ class VideoDownloader:
             "fragment_retries": 3,
         })
 
-        # Audio extraction
-        if extract_audio:
-            opts["format"] = "bestaudio/best"
+        # Audio extraction post-processing
+        if download_type == "audio":
             opts["postprocessors"] = [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": audio_format,

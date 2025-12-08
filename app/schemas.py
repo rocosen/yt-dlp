@@ -1,23 +1,76 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Literal
 from pydantic import BaseModel, Field, HttpUrl
+from enum import Enum
+
+
+# ============ Enums ============
+
+class DownloadType(str, Enum):
+    """Download type options."""
+    AUDIO = "audio"
+    VIDEO = "video"
+    AUDIO_VIDEO = "audio_video"
+
+
+class VideoQuality(str, Enum):
+    """Video quality options."""
+    BEST = "best"
+    WORST = "worst"
+    Q480 = "480"
+    Q720 = "720"
+    Q1080 = "1080"
+    Q1440 = "1440"
+    Q2160 = "2160"
+
+
+class StorageType(str, Enum):
+    """Storage type options."""
+    LOCAL = "local"
+    S3 = "s3"
+    GCS = "gcs"
+    S3_COMPATIBLE = "s3_compatible"
 
 
 # ============ Request Schemas ============
 
 class DownloadOptions(BaseModel):
     """Download options for a task."""
-    format: Optional[str] = Field(None, description="yt-dlp format specification")
-    extract_audio: bool = Field(False, description="Extract audio only")
-    audio_format: str = Field("mp3", description="Audio format (mp3, aac, wav)")
+    # New parameters
+    download_type: DownloadType = Field(
+        DownloadType.AUDIO_VIDEO,
+        description="Download type: audio, video, or audio_video"
+    )
+    video_quality: VideoQuality = Field(
+        VideoQuality.Q720,
+        description="Video quality: best, worst, or resolution (480, 720, 1080, 1440, 2160)"
+    )
+
+    # Legacy parameters (keep for backward compatibility)
+    format: Optional[str] = Field(None, description="yt-dlp format specification (overrides video_quality)")
+    extract_audio: bool = Field(False, description="[Deprecated] Use download_type='audio' instead")
+    audio_format: str = Field("mp3", description="Audio format when download_type is 'audio' (mp3, aac, wav, m4a)")
 
 
 class CreateTaskRequest(BaseModel):
     """Request to create a new download task."""
+    # Required
     video_url: str = Field(..., description="URL of the video to download")
+
+    # Task-level configuration
     callback_url: Optional[str] = Field(None, description="URL for completion callback")
+    storage_type: StorageType = Field(
+        StorageType.LOCAL,
+        description="Storage type: local, s3, gcs, or s3_compatible"
+    )
+    storage_url: Optional[str] = Field(
+        None,
+        description="Storage URL (e.g., s3://bucket/folder/ or gs://bucket/folder/)"
+    )
+
+    # Download options
     options: Optional[DownloadOptions] = Field(None, description="Download options")
 
     class Config:
@@ -25,9 +78,11 @@ class CreateTaskRequest(BaseModel):
             "example": {
                 "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
                 "callback_url": "https://your-server.com/callback",
+                "storage_type": "local",
+                "storage_url": None,
                 "options": {
-                    "format": "best[height<=1080]",
-                    "extract_audio": False
+                    "download_type": "audio_video",
+                    "video_quality": "1080"
                 }
             }
         }

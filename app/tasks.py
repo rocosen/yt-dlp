@@ -14,6 +14,7 @@ from app.database import SessionLocal
 from app.models import Task as TaskModel, TaskStatus
 from app.downloader import VideoDownloader, DownloadError
 from app.callback import callback_service, build_success_payload, build_failure_payload
+from app.storage import upload_to_storage, StorageError
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ def download_video_task(
     task_id: str,
     video_url: str,
     callback_url: Optional[str] = None,
+    storage_type: str = "local",
+    storage_url: Optional[str] = None,
     options: Optional[Dict] = None,
 ) -> Dict:
     """
@@ -57,13 +60,25 @@ def download_video_task(
         task_id: Database task ID
         video_url: URL of video to download
         callback_url: Optional callback URL for notification
-        options: Download options (format, extract_audio, etc.)
+        storage_type: Storage type (local, s3, gcs, s3_compatible)
+        storage_url: Storage URL for cloud storage
+        options: Download options (download_type, video_quality, etc.)
 
     Returns:
         Result dictionary
     """
     options = options or {}
     db = self.db
+
+    # Extract download options with defaults
+    download_type = options.get("download_type", "audio_video")
+    video_quality = options.get("video_quality", "720")
+    format_spec = options.get("format")
+    audio_format = options.get("audio_format", "mp3")
+
+    # Legacy support: extract_audio -> download_type
+    if options.get("extract_audio", False) and download_type == "audio_video":
+        download_type = "audio"
 
     # Get task from database
     task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
@@ -105,13 +120,14 @@ def download_video_task(
             except Exception as e:
                 logger.warning(f"Failed to update progress: {e}")
 
-        # Download video
+        # Download video with new parameters
         result = downloader.download(
             url=video_url,
             progress_callback=progress_callback,
-            format_spec=options.get("format"),
-            extract_audio=options.get("extract_audio", False),
-            audio_format=options.get("audio_format", "mp3"),
+            download_type=download_type,
+            video_quality=video_quality,
+            format_spec=format_spec,
+            audio_format=audio_format,
         )
 
         # Update task with video info
@@ -120,14 +136,33 @@ def download_video_task(
         task.video_thumbnail = result.video_info.thumbnail
         task.video_filesize = result.video_info.filesize
 
-        # For now, store local path (cloud upload will come later)
+        # Store local path
         task.local_path = str(result.file_path)
         task.file_name = result.file_name
         task.file_size = result.file_size
 
-        # TODO: Upload to cloud storage and get download_url
-        # For now, just mark as local file
-        task.download_url = f"file://{result.file_path}"
+        # Upload to cloud storage if configured
+        if storage_type and storage_type != "local":
+            task.status = TaskStatus.UPLOADING.value
+            db.commit()
+
+            try:
+                download_url = upload_to_storage(
+                    local_path=result.file_path,
+                    storage_type=storage_type,
+                    storage_url=storage_url,
+                    delete_local=True,  # Delete local file after upload
+                )
+                task.download_url = download_url
+                logger.info(f"Task {task_id}: Uploaded to {storage_type}: {download_url}")
+            except StorageError as e:
+                logger.error(f"Task {task_id}: Storage upload failed: {e.code} - {e.message}")
+                # Keep local file as fallback
+                task.download_url = f"file://{result.file_path}"
+                task.error_message = f"Storage upload failed: {e.message}"
+        else:
+            # Local storage
+            task.download_url = f"file://{result.file_path}"
 
         # Update status to completed
         task.status = TaskStatus.COMPLETED.value
