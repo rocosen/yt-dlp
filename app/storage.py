@@ -148,6 +148,7 @@ class StorageUploader:
         Supports:
         - https://ACCESS_KEY:SECRET@endpoint/bucket/prefix
         - https://endpoint/bucket/prefix (uses env credentials)
+        - https://ACCESS_KEY:SECRET@BUCKET.oss-REGION.aliyuncs.com/prefix (Alibaba OSS)
 
         Returns:
             Dict with endpoint_url, bucket, prefix, access_key, secret_key
@@ -158,15 +159,27 @@ class StorageUploader:
         access_key = parsed.username
         secret_key = parsed.password
 
-        # Build endpoint URL
-        endpoint_url = f"{parsed.scheme}://{parsed.hostname}"
-        if parsed.port:
-            endpoint_url += f":{parsed.port}"
+        hostname = parsed.hostname or ""
 
-        # Parse path for bucket and prefix
-        path_parts = parsed.path.strip("/").split("/", 1)
-        bucket = path_parts[0] if path_parts else ""
-        prefix = path_parts[1] if len(path_parts) > 1 else ""
+        # Check if this is Alibaba OSS format: BUCKET.oss-REGION.aliyuncs.com
+        if ".oss-" in hostname and hostname.endswith(".aliyuncs.com"):
+            # Extract bucket from hostname (first part before .oss-)
+            bucket = hostname.split(".oss-")[0]
+            # Build endpoint URL without bucket prefix
+            region_and_domain = "oss-" + hostname.split(".oss-")[1]
+            endpoint_url = f"{parsed.scheme}://{region_and_domain}"
+            # Path is the prefix/folder
+            prefix = parsed.path.strip("/")
+        else:
+            # Standard S3-compatible format: endpoint/bucket/prefix
+            endpoint_url = f"{parsed.scheme}://{hostname}"
+            if parsed.port:
+                endpoint_url += f":{parsed.port}"
+
+            # Parse path for bucket and prefix
+            path_parts = parsed.path.strip("/").split("/", 1)
+            bucket = path_parts[0] if path_parts else ""
+            prefix = path_parts[1] if len(path_parts) > 1 else ""
 
         if not bucket:
             raise StorageError("INVALID_S3_URL", "Bucket name is required in storage_url")
@@ -241,14 +254,19 @@ class StorageUploader:
 
     def _upload_s3_compatible(self, local_path: Path, storage_url: str) -> str:
         """Upload file to S3-compatible storage (OSS, MinIO, R2, etc.)."""
+        config = self._parse_s3_compatible_url(storage_url)
+
+        # Check if this is Alibaba OSS - use native SDK for better compatibility
+        if "aliyuncs.com" in config["endpoint_url"]:
+            return self._upload_oss_native(local_path, config)
+
+        # For other S3-compatible storage, use boto3
         try:
             import boto3
             from botocore.exceptions import ClientError
             from botocore.config import Config
         except ImportError:
             raise StorageError("MISSING_DEPENDENCY", "boto3 is required for S3-compatible upload. Install with: pip install boto3")
-
-        config = self._parse_s3_compatible_url(storage_url)
 
         # Build the key
         key = f"{config['prefix']}/{local_path.name}" if config["prefix"] else local_path.name
@@ -257,7 +275,6 @@ class StorageUploader:
         logger.info(f"Uploading to S3-compatible storage: {config['endpoint_url']}/{config['bucket']}/{key}")
 
         try:
-            # Create S3 client with custom endpoint
             s3_client = boto3.client(
                 "s3",
                 endpoint_url=config["endpoint_url"],
@@ -274,6 +291,43 @@ class StorageUploader:
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             raise StorageError(f"S3_COMPATIBLE_ERROR_{error_code}", str(e))
+
+    def _upload_oss_native(self, local_path: Path, config: dict) -> str:
+        """Upload file to Alibaba OSS using native oss2 SDK."""
+        try:
+            import oss2
+        except ImportError:
+            raise StorageError(
+                "MISSING_DEPENDENCY",
+                "oss2 is required for Alibaba OSS upload. Install with: pip install oss2"
+            )
+
+        access_key = config["access_key"] or os.environ.get("OSS_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
+        secret_key = config["secret_key"] or os.environ.get("OSS_ACCESS_KEY_SECRET") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+
+        if not access_key or not secret_key:
+            raise StorageError("MISSING_CREDENTIALS", "OSS access key and secret are required")
+
+        # Build the key
+        key = f"{config['prefix']}/{local_path.name}" if config["prefix"] else local_path.name
+        key = key.lstrip("/")
+
+        # endpoint_url is like https://oss-cn-beijing.aliyuncs.com
+        endpoint = config["endpoint_url"]
+        bucket_name = config["bucket"]
+
+        logger.info(f"Uploading to Alibaba OSS: {bucket_name}/{key}")
+
+        try:
+            auth = oss2.Auth(access_key, secret_key)
+            bucket = oss2.Bucket(auth, endpoint, bucket_name)
+            bucket.put_object_from_file(key, str(local_path))
+
+            # Return the public URL
+            return f"https://{bucket_name}.{endpoint.replace('https://', '')}/{key}"
+
+        except oss2.exceptions.OssError as e:
+            raise StorageError(f"OSS_ERROR_{e.code}", e.message)
 
 
 # Convenience function

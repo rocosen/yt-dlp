@@ -236,8 +236,87 @@ yt-dlp 支持 1000+ 网站：
 - [x] 回调通知
 - [x] Docker 部署
 - [x] Web 调试界面
-- [ ] S3/OSS 云存储上传
+- [x] S3/OSS 云存储上传
 - [ ] WebSocket 实时进度
+
+---
+
+## 云存储配置
+
+支持将下载的文件自动上传到云存储，支持以下存储类型：
+
+| 存储类型 | `storage_type` | 依赖包 | 说明 |
+|----------|---------------|--------|------|
+| 本地存储 | `local` | 无 | 默认，文件保存在本地 |
+| AWS S3 | `s3` | `boto3` | Amazon S3 存储 |
+| Google Cloud | `gcs` | `google-cloud-storage` | Google Cloud Storage |
+| 阿里云 OSS | `s3_compatible` | `oss2` | 使用原生 SDK，更稳定 |
+| 其他 S3 兼容 | `s3_compatible` | `boto3` | MinIO, Cloudflare R2 等 |
+
+### 安装依赖
+
+```bash
+# AWS S3 / S3 兼容存储
+pip install boto3
+
+# 阿里云 OSS（推荐使用原生 SDK）
+pip install oss2
+
+# Google Cloud Storage
+pip install google-cloud-storage
+```
+
+### API 调用示例
+
+#### 上传到阿里云 OSS
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_url": "https://www.bilibili.com/video/BV1GJ411x7h7",
+    "storage_type": "s3_compatible",
+    "storage_url": "https://ACCESS_KEY:SECRET@BUCKET.oss-cn-beijing.aliyuncs.com/folder",
+    "callback_url": "https://your-server.com/callback"
+  }'
+```
+
+#### 上传到 AWS S3
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_url": "https://www.bilibili.com/video/BV1GJ411x7h7",
+    "storage_type": "s3",
+    "storage_url": "s3://your-bucket/folder"
+  }'
+```
+
+> **注意**: AWS S3 需要配置环境变量 `AWS_ACCESS_KEY_ID` 和 `AWS_SECRET_ACCESS_KEY`
+
+#### 上传到 Google Cloud Storage
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_url": "https://www.bilibili.com/video/BV1GJ411x7h7",
+    "storage_type": "gcs",
+    "storage_url": "gs://your-bucket/folder"
+  }'
+```
+
+> **注意**: GCS 需要配置 `GOOGLE_APPLICATION_CREDENTIALS` 环境变量指向服务账号 JSON 文件
+
+### storage_url 格式说明
+
+| 存储类型 | URL 格式 |
+|----------|----------|
+| AWS S3 | `s3://bucket-name/folder` |
+| GCS | `gs://bucket-name/folder` |
+| 阿里云 OSS | `https://ACCESS_KEY:SECRET@bucket.oss-region.aliyuncs.com/folder` |
+| S3 兼容 | `https://ACCESS_KEY:SECRET@endpoint/bucket/folder` |
 
 ---
 
